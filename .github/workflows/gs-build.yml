@@ -1,4 +1,4 @@
-# gs-build v2 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+# gs-build v3 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
 name: gs-build
 run-name: gs ${{ inputs.job }}
 on:
@@ -44,8 +44,8 @@ jobs:
             ~/.gradle/wrapper
             ~/.pub-cache
             ~/.android/build-cache
-          key: gs-v2-${{ inputs.flutter }}-${{ github.run_id }}
-          restore-keys: gs-v2-${{ inputs.flutter }}-
+          key: gs-v3-${{ inputs.flutter }}-${{ github.run_id }}
+          restore-keys: gs-v3-${{ inputs.flutter }}-
       - name: restore project build state
         uses: actions/cache/restore@v4
         with:
@@ -56,8 +56,8 @@ jobs:
             p/android/app/build
             p/.gradle
             p/app/build
-          key: gs-proj-v2-${{ inputs.pname }}-${{ github.run_id }}
-          restore-keys: gs-proj-v2-${{ inputs.pname }}-
+          key: gs-proj-v3-${{ inputs.pname }}-${{ github.run_id }}
+          restore-keys: gs-proj-v3-${{ inputs.pname }}-
       - uses: gradle/actions/setup-gradle@v4
         if: inputs.flutter != '1'
         with: {gradle-version: "8.9", cache-disabled: true}
@@ -85,7 +85,16 @@ jobs:
               flutter --version | head -1
               if [ "$KIND" = web ]; then
                 [ -d web ] || flutter create --platforms web --project-name "$(sed -n 's/^name:[[:space:]]*//p' pubspec.yaml | head -1)" . >/dev/null
-                flutter build web --release -O1 --no-wasm-dry-run && tar czf ../out/web.tgz -C build/web .
+                flutter build web --release -O1 --no-wasm-dry-run --no-web-resources-cdn && tar czf ../out/web.tgz -C build/web . && {
+                  # v179: the render check also runs here (was a headless Chrome on the 2-core desktop)
+                  sed -i 's#<base href="[^"]*">#<base href="./">#' build/web/index.html
+                  ( cd build/web && python3 -m http.server 8686 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > ../../../out/srv.pid )
+                  sleep 1
+                  timeout 60 google-chrome --headless=new --no-sandbox --disable-dev-shm-usage --no-first-run --disable-extensions \
+                    --use-angle=swiftshader --enable-unsafe-swiftshader --user-data-dir="$RUNNER_TEMP/chp" --window-size=360,640 \
+                    --hide-scrollbars --virtual-time-budget=15000 --enable-logging=stderr --v=0 \
+                    --screenshot="$PWD/../out/render.png" http://127.0.0.1:8686/ > ../out/render.log 2>&1 || true
+                  kill "$(cat ../out/srv.pid)" 2>/dev/null; rm -f ../out/srv.pid; true; }
               else
                 printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
                 flutter build apk --"$KIND" --target-platform "$TARGETS" && \
@@ -117,7 +126,7 @@ jobs:
             p/android/app/build
             p/.gradle
             p/app/build
-          key: gs-proj-v2-${{ inputs.pname }}-${{ github.run_id }}
+          key: gs-proj-v3-${{ inputs.pname }}-${{ github.run_id }}
       - name: save caches
         if: always()
         uses: actions/cache/save@v4
@@ -127,4 +136,4 @@ jobs:
             ~/.gradle/wrapper
             ~/.pub-cache
             ~/.android/build-cache
-          key: gs-v2-${{ inputs.flutter }}-${{ github.run_id }}
+          key: gs-v3-${{ inputs.flutter }}-${{ github.run_id }}
