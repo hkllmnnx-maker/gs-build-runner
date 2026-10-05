@@ -1,4 +1,4 @@
-# gs-build v1 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+# gs-build v2 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
 name: gs-build
 run-name: gs ${{ inputs.job }}
 on:
@@ -9,6 +9,7 @@ on:
       flutter: {required: false, type: string, default: "0"}
       fver: {required: false, type: string, default: ""}
       targets: {required: false, type: string, default: "android-arm64"}
+      pname: {required: false, type: string, default: "app"}
 permissions:
   contents: read
 jobs:
@@ -25,6 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$JOB" in *[!a-f0-9]*|"") echo bad job; exit 2;; esac
+          case "${{ inputs.pname }}" in *[!A-Za-z0-9_.-]*|"") echo bad name; exit 2;; esac
           gh release download inbox -R "$GITHUB_REPOSITORY" -p "$JOB.enc" -O src.enc
           mkdir -p p && openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:GS_KEY -in src.enc | tar xz -C p
           rm -f src.enc
@@ -41,11 +43,32 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.pub-cache
-          key: gs-v1-${{ inputs.flutter }}-${{ hashFiles('p/**/pubspec.lock', 'p/**/*.gradle', 'p/**/*.gradle.kts', 'p/**/libs.versions.toml') }}
-          restore-keys: gs-v1-${{ inputs.flutter }}-
+            ~/.android/build-cache
+          key: gs-v2-${{ inputs.flutter }}-${{ github.run_id }}
+          restore-keys: gs-v2-${{ inputs.flutter }}-
+      - name: restore project build state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            p/build
+            p/.dart_tool
+            p/android/.gradle
+            p/android/app/build
+            p/.gradle
+            p/app/build
+          key: gs-proj-v2-${{ inputs.pname }}-${{ github.run_id }}
+          restore-keys: gs-proj-v2-${{ inputs.pname }}-
       - uses: gradle/actions/setup-gradle@v4
         if: inputs.flutter != '1'
         with: {gradle-version: "8.9", cache-disabled: true}
+      - name: tune for 4 vCPU / 16 GB
+        run: |
+          # v178: the desktop clamps Gradle to 2 workers / 1.5 GB (2-core machine) — on the runner use all of it
+          for f in p/gradle.properties p/android/gradle.properties; do
+            [ -f "$f" ] || continue
+            sed -i -E '/^org\.gradle\.(jvmargs|workers\.max|parallel|caching)=/d; /^kotlin\.daemon\.jvmargs=/d' "$f"
+            printf 'org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+UseParallelGC -Dfile.encoding=UTF-8\norg.gradle.workers.max=4\norg.gradle.parallel=true\norg.gradle.caching=true\nkotlin.daemon.jvmargs=-Xmx2g\n' >> "$f"
+          done
       - name: build (output kept private)
         env: {GS_KEY: "${{ secrets.GS_KEY }}"}
         run: |
@@ -78,16 +101,30 @@ jobs:
           } > ../out/build.log 2>&1
           echo $? > ../out/rc
           cd ..
+          (cd p/android 2>/dev/null && ./gradlew --stop >/dev/null 2>&1) || gradle --stop >/dev/null 2>&1 || true
           tar czf - -C out . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -pass env:GS_KEY -out res.enc
           echo "rc=$(cat out/rc)"
       - uses: actions/upload-artifact@v4
         with: {name: "res-${{ inputs.job }}", path: res.enc, retention-days: 1, compression-level: 0}
+      - name: save project build state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            p/build
+            p/.dart_tool
+            p/android/.gradle
+            p/android/app/build
+            p/.gradle
+            p/app/build
+          key: gs-proj-v2-${{ inputs.pname }}-${{ github.run_id }}
       - name: save caches
-        if: always() && steps.c.outputs.cache-hit != 'true'
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.pub-cache
-          key: gs-v1-${{ inputs.flutter }}-${{ hashFiles('p/**/pubspec.lock', 'p/**/*.gradle', 'p/**/*.gradle.kts', 'p/**/libs.versions.toml') }}
+            ~/.android/build-cache
+          key: gs-v2-${{ inputs.flutter }}-${{ github.run_id }}
