@@ -1,0 +1,93 @@
+# gs-build v1 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+name: gs-build
+run-name: gs ${{ inputs.job }}
+on:
+  workflow_dispatch:
+    inputs:
+      job: {required: true, type: string}
+      kind: {required: true, type: string}
+      flutter: {required: false, type: string, default: "0"}
+      fver: {required: false, type: string, default: ""}
+      targets: {required: false, type: string, default: "android-arm64"}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      JOB: ${{ inputs.job }}
+      KIND: ${{ inputs.kind }}
+      TARGETS: ${{ inputs.targets }}
+    steps:
+      - name: fetch (encrypted)
+        env: {GH_TOKEN: "${{ github.token }}", GS_KEY: "${{ secrets.GS_KEY }}"}
+        run: |
+          set -euo pipefail
+          case "$JOB" in *[!a-f0-9]*|"") echo bad job; exit 2;; esac
+          gh release download inbox -R "$GITHUB_REPOSITORY" -p "$JOB.enc" -O src.enc
+          mkdir -p p && openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:GS_KEY -in src.enc | tar xz -C p
+          rm -f src.enc
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: subosito/flutter-action@v2
+        if: inputs.flutter == '1'
+        with: {channel: stable, flutter-version: "${{ inputs.fver }}", cache: true}
+      - name: restore caches
+        id: c
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.pub-cache
+          key: gs-v1-${{ inputs.flutter }}-${{ hashFiles('p/**/pubspec.lock', 'p/**/*.gradle', 'p/**/*.gradle.kts', 'p/**/libs.versions.toml') }}
+          restore-keys: gs-v1-${{ inputs.flutter }}-
+      - uses: gradle/actions/setup-gradle@v4
+        if: inputs.flutter != '1'
+        with: {gradle-version: "8.9", cache-disabled: true}
+      - name: build (output kept private)
+        env: {GS_KEY: "${{ secrets.GS_KEY }}"}
+        run: |
+          set +e
+          mkdir -p out
+          keytool -genkeypair -keystore "$RUNNER_TEMP/t.jks" -storepass gsbuild -keypass gsbuild -alias gsrelease \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname CN=gs-gha-build >/dev/null 2>&1
+          export GS_ANDROID_KEYSTORE="$RUNNER_TEMP/t.jks" GS_ANDROID_KEYSTORE_PASS=gsbuild GS_ANDROID_KEY_ALIAS=gsrelease \
+                 GS_ANDROID_KEY_PASS=gsbuild GS_ANDROID_SIGNING_PROPS=/nonexistent CI=true
+          cd p
+          {
+            echo "[runner] $(nproc) vCPU · $(free -g | awk '/Mem/{print $2}') GB RAM"
+            if [ "${{ inputs.flutter }}" = 1 ]; then
+              flutter --version | head -1
+              if [ "$KIND" = web ]; then
+                [ -d web ] || flutter create --platforms web --project-name "$(sed -n 's/^name:[[:space:]]*//p' pubspec.yaml | head -1)" . >/dev/null
+                flutter build web --release -O1 --no-wasm-dry-run && tar czf ../out/web.tgz -C build/web .
+              else
+                printf 'sdk.dir=%s\nflutter.sdk=%s\n' "$ANDROID_HOME" "$FLUTTER_ROOT" > android/local.properties
+                flutter build apk --"$KIND" --target-platform "$TARGETS" && \
+                  cp "$(ls -t build/app/outputs/flutter-apk/*.apk | head -1)" ../out/app.apk
+              fi
+            else
+              printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+              [ -f gradle.properties ] && sed -i -E '/^org\.gradle\.(java\.home|jvmargs)=/d' gradle.properties
+              T=assembleDebug; [ "$KIND" = release ] && T=assembleRelease
+              gradle --console=plain --warning-mode=none --build-cache --parallel "$T" && \
+                cp "$(find app/build/outputs/apk -name '*.apk' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)" ../out/app.apk
+            fi
+          } > ../out/build.log 2>&1
+          echo $? > ../out/rc
+          cd ..
+          tar czf - -C out . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -pass env:GS_KEY -out res.enc
+          echo "rc=$(cat out/rc)"
+      - uses: actions/upload-artifact@v4
+        with: {name: "res-${{ inputs.job }}", path: res.enc, retention-days: 1, compression-level: 0}
+      - name: save caches
+        if: always() && steps.c.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.pub-cache
+          key: gs-v1-${{ inputs.flutter }}-${{ hashFiles('p/**/pubspec.lock', 'p/**/*.gradle', 'p/**/*.gradle.kts', 'p/**/libs.versions.toml') }}
