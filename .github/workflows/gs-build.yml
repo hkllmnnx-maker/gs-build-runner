@@ -1,4 +1,4 @@
-# gs-build v4 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+# gs-build v5 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
 name: gs-build
 run-name: gs ${{ inputs.job }}
 on:
@@ -96,11 +96,12 @@ jobs:
                     --screenshot="$PWD/../out/render.png" http://127.0.0.1:8686/ > ../out/render.log 2>&1 || true
                   kill "$(cat ../out/srv.pid)" 2>/dev/null; rm -f ../out/srv.pid; true; }
               elif [ "$KIND" = analyze ] || [ "$KIND" = test ]; then
+                # v186: test discovery via find (ls test/**/… without globstar missed the default test/widget_test.dart)
                 # v181: the agent's quality gate (pub get + analyze [+ tests]) — was run on the 2-core desktop
                 flutter pub get; r=$?
                 if [ $r -eq 0 ]; then flutter analyze --no-fatal-infos --no-fatal-warnings; r=$?; fi
                 if [ "$KIND" = test ]; then
-                  if ls test/*_test.dart test/**/*_test.dart >/dev/null 2>&1; then flutter test --no-pub; t=$?; [ $r -eq 0 ] && r=$t
+                  if [ -n "$(find test -name '*_test.dart' 2>/dev/null | head -1)" ]; then flutter test --no-pub; t=$?; [ $r -eq 0 ] && r=$t
                   else echo "NO_TESTS"; fi
                 fi
                 cp -f pubspec.lock ../out/pubspec.lock 2>/dev/null
