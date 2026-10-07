@@ -1,4 +1,4 @@
-# gs-build v6 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+# gs-build v7 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
 name: gs-build
 run-name: gs ${{ inputs.job }}
 on:
@@ -88,6 +88,9 @@ jobs:
                 flutter build web --release -O1 --no-wasm-dry-run --no-web-resources-cdn && tar czf ../out/web.tgz -C build/web . && {
                   # v179: the render check also runs here (was a headless Chrome on the 2-core desktop)
                   sed -i 's#<base href="[^"]*">#<base href="./">#' build/web/index.html
+                  # v200: responsiveness probe in the RENDER copy only (web.tgz is already packed): logs the first frame, the longest
+                  # main-thread task after it and 8 heartbeats — a frozen/crashed app cannot fake them (studio-agent rejects the link)
+                  sed -i 's#</body>#<script>(function(){var t0=0,mx=0,n=0;function hb(){n++;console.log("GS_ALIVE "+n);if(n<8){setTimeout(hb,400);}}window.addEventListener("flutter-first-frame",function(){t0=performance.now();console.log("GS_FIRST_FRAME "+Math.round(t0));setTimeout(hb,400);});try{new PerformanceObserver(function(l){l.getEntries().forEach(function(e){if(t0>0){if(e.startTime>=t0-50){var d=Math.round(e.duration);if(d>mx){mx=d;console.log("GS_LONGTASK_MAX "+d);}}}});}).observe({entryTypes:["longtask"]});}catch(x){}})();</script></body>#' build/web/index.html
                   # v200: «( cd build/web && server & echo $! > …)» backgrounded the cd too ⇒ the pid file went to the wrong dir
                   python3 -m http.server 8686 --bind 127.0.0.1 --directory build/web >/dev/null 2>&1 &
                   echo $! > ../out/srv.pid
