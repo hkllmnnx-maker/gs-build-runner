@@ -1,4 +1,4 @@
-# gs-build v5 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
+# gs-build v6 — managed by the desktop's gha-build (do not edit: it is rewritten on change)
 name: gs-build
 run-name: gs ${{ inputs.job }}
 on:
@@ -88,12 +88,16 @@ jobs:
                 flutter build web --release -O1 --no-wasm-dry-run --no-web-resources-cdn && tar czf ../out/web.tgz -C build/web . && {
                   # v179: the render check also runs here (was a headless Chrome on the 2-core desktop)
                   sed -i 's#<base href="[^"]*">#<base href="./">#' build/web/index.html
-                  ( cd build/web && python3 -m http.server 8686 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > ../../../out/srv.pid )
-                  sleep 1
+                  # v200: «( cd build/web && server & echo $! > …)» backgrounded the cd too ⇒ the pid file went to the wrong dir
+                  python3 -m http.server 8686 --bind 127.0.0.1 --directory build/web >/dev/null 2>&1 &
+                  echo $! > ../out/srv.pid
+                  for _w in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null http://127.0.0.1:8686/ && break; sleep 0.3; done
+                  _rs=$(date +%s)
                   timeout 60 google-chrome --headless=new --no-sandbox --disable-dev-shm-usage --no-first-run --disable-extensions \
                     --use-angle=swiftshader --enable-unsafe-swiftshader --user-data-dir="$RUNNER_TEMP/chp" --window-size=360,640 \
                     --hide-scrollbars --virtual-time-budget=15000 --enable-logging=stderr --v=0 \
                     --screenshot="$PWD/../out/render.png" http://127.0.0.1:8686/ > ../out/render.log 2>&1 || true
+                  echo "RENDER_SECONDS=$(( $(date +%s) - _rs ))" >> ../out/render.log
                   kill "$(cat ../out/srv.pid)" 2>/dev/null; rm -f ../out/srv.pid; true; }
               elif [ "$KIND" = analyze ] || [ "$KIND" = test ]; then
                 # v186: test discovery via find (ls test/**/… without globstar missed the default test/widget_test.dart)
